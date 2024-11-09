@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/diskfs/go-diskfs/backend"
 	"github.com/diskfs/go-diskfs/filesystem"
 	"github.com/diskfs/go-diskfs/util"
 )
@@ -59,7 +60,7 @@ type FileSystem struct {
 	bytesPerCluster int
 	size            int64
 	start           int64
-	file            util.File
+	file            backend.Storage
 }
 
 // Equal compare if two filesystems are equal
@@ -93,7 +94,7 @@ func (fs *FileSystem) Equal(a *FileSystem) bool {
 //
 // If the provided blocksize is 0, it will use the default of 512 bytes. If it is any number other than 0
 // or 512, it will return an error.
-func Create(f util.File, size, start, blocksize int64, volumeLabel string) (*FileSystem, error) {
+func Create(f backend.WritableFile, size, start, blocksize int64, volumeLabel string) (*FileSystem, error) {
 	// blocksize must be <=0 or exactly SectorSize512 or error
 	if blocksize != int64(SectorSize512) && blocksize > 0 {
 		return nil, fmt.Errorf("blocksize for FAT32 must be either 512 bytes or 0, not %d", blocksize)
@@ -111,6 +112,12 @@ func Create(f util.File, size, start, blocksize int64, volumeLabel string) (*Fil
 
 	fsisPrimarySector := uint16(1)
 	backupBootSector := uint16(6)
+
+	backingStorage := util.BackendFromFile(f, false)
+	writableFile, err := backingStorage.Writable()
+	if err != nil {
+		return nil, err
+	}
 
 	/*
 		size calculations
@@ -252,7 +259,7 @@ func Create(f util.File, size, start, blocksize int64, volumeLabel string) (*Fil
 		bytesPerCluster: int(sectorsPerCluster) * int(SectorSize512),
 		start:           start,
 		size:            size,
-		file:            f,
+		file:            backingStorage,
 	}
 
 	// write the boot sector
@@ -277,7 +284,7 @@ func Create(f util.File, size, start, blocksize int64, volumeLabel string) (*Fil
 	// length of cluster in bytes
 	tmpb := make([]byte, fs.bytesPerCluster)
 	// zero out the root directory cluster
-	written, err := f.WriteAt(tmpb, clusterStart)
+	written, err := writableFile.WriteAt(tmpb, clusterStart)
 	if err != nil {
 		return nil, fmt.Errorf("failed to zero out root directory: %w", err)
 	}
@@ -324,7 +331,7 @@ func Create(f util.File, size, start, blocksize int64, volumeLabel string) (*Fil
 //
 // If the provided blocksize is 0, it will use the default of 512 bytes. If it is any number other than 0
 // or 512, it will return an error.
-func Read(file util.File, size, start, blocksize int64) (*FileSystem, error) {
+func Read(f backend.File, size, start, blocksize int64) (*FileSystem, error) {
 	// blocksize must be <=0 or exactly SectorSize512 or error
 	if blocksize != int64(SectorSize512) && blocksize > 0 {
 		return nil, fmt.Errorf("blocksize for FAT32 must be either 512 bytes or 0, not %d", blocksize)
@@ -335,7 +342,7 @@ func Read(file util.File, size, start, blocksize int64) (*FileSystem, error) {
 	if size < blocksize*4 {
 		return nil, fmt.Errorf("requested size is smaller than minimum allowed FAT32 size %d", blocksize*4)
 	}
-
+	file := util.BackendFromFile(f, true)
 	// load the information from the disk
 	// read first 512 bytes from the file
 	bsb := make([]byte, SectorSize512)
@@ -391,7 +398,8 @@ func Read(file util.File, size, start, blocksize int64) (*FileSystem, error) {
 		bytesPerCluster: int(sectorsPerCluster) * int(SectorSize512),
 		start:           start,
 		size:            size,
-		file:            file,
+		// FIXME: how to detect readonly here?!
+		file: util.BackendFromFile(f, true),
 	}, nil
 }
 
@@ -403,6 +411,10 @@ func (fs *FileSystem) writeBootSector() error {
 			return nil, fmt.Errorf("error writing MS-DOS Boot Sector: %v", err)
 		}
 	*/
+	writableFile, err := fs.file.Writable()
+	if err != nil {
+		return err
+	}
 
 	b, err := fs.bootSector.toBytes()
 	if err != nil {
@@ -410,7 +422,7 @@ func (fs *FileSystem) writeBootSector() error {
 	}
 
 	// write main boot sector
-	count, err := fs.file.WriteAt(b, 0+fs.start)
+	count, err := writableFile.WriteAt(b, 0+fs.start)
 	if err != nil {
 		return fmt.Errorf("error writing MS-DOS Boot Sector to disk: %w", err)
 	}
@@ -420,7 +432,7 @@ func (fs *FileSystem) writeBootSector() error {
 
 	// write backup boot sector to the file
 	if fs.bootSector.biosParameterBlock.backupBootSector > 0 {
-		count, err = fs.file.WriteAt(b, int64(fs.bootSector.biosParameterBlock.backupBootSector)*int64(SectorSize512)+fs.start)
+		count, err = writableFile.WriteAt(b, int64(fs.bootSector.biosParameterBlock.backupBootSector)*int64(SectorSize512)+fs.start)
 		if err != nil {
 			return fmt.Errorf("error writing MS-DOS Boot Sector to disk: %w", err)
 		}
@@ -438,13 +450,17 @@ func (fs *FileSystem) writeFsis() error {
 	fsisPrimary := int64(fsInformationSector * uint16(SectorSize512))
 
 	fsisBytes := fs.fsis.toBytes()
+	writableFile, err := fs.file.Writable()
+	if err != nil {
+		return err
+	}
 
-	if _, err := fs.file.WriteAt(fsisBytes, fsisPrimary+fs.start); err != nil {
+	if _, err := writableFile.WriteAt(fsisBytes, fsisPrimary+fs.start); err != nil {
 		return fmt.Errorf("unable to write primary Fsis: %w", err)
 	}
 
 	if backupBootSector > 0 {
-		if _, err := fs.file.WriteAt(fsisBytes, int64(backupBootSector+1)*int64(SectorSize512)+fs.start); err != nil {
+		if _, err := writableFile.WriteAt(fsisBytes, int64(backupBootSector+1)*int64(SectorSize512)+fs.start); err != nil {
 			return fmt.Errorf("unable to write backup Fsis: %w", err)
 		}
 	}
@@ -458,12 +474,16 @@ func (fs *FileSystem) writeFat() error {
 	fatSecondaryStart := fatPrimaryStart + uint64(fs.table.size)
 
 	fatBytes := fs.table.bytes()
+	writableFile, err := fs.file.Writable()
+	if err != nil {
+		return err
+	}
 
-	if _, err := fs.file.WriteAt(fatBytes, int64(fatPrimaryStart)+fs.start); err != nil {
+	if _, err := writableFile.WriteAt(fatBytes, int64(fatPrimaryStart)+fs.start); err != nil {
 		return fmt.Errorf("unable to write primary FAT table: %w", err)
 	}
 
-	if _, err := fs.file.WriteAt(fatBytes, int64(fatSecondaryStart)+fs.start); err != nil {
+	if _, err := writableFile.WriteAt(fatBytes, int64(fatSecondaryStart)+fs.start); err != nil {
 		return fmt.Errorf("unable to write backup FAT table: %w", err)
 	}
 
@@ -916,6 +936,11 @@ func (fs *FileSystem) writeDirectoryEntries(dir *Directory) error {
 	if err != nil {
 		return fmt.Errorf("could not create a valid byte stream for a FAT32 Entries: %w", err)
 	}
+
+	writableFile, err := fs.file.Writable()
+	if err != nil {
+		return err
+	}
 	// now have to expand with zeros to the a multiple of cluster lengths
 	// how many clusters do we need, how many do we have?
 	clusterList, err := fs.getClusterList(dir.clusterLocation)
@@ -936,7 +961,7 @@ func (fs *FileSystem) writeDirectoryEntries(dir *Directory) error {
 		// bytes where the cluster starts
 		clusterStart := fs.start + int64(fs.dataStart) + int64(cluster-2)*int64(fs.bytesPerCluster)
 		bStart := i * fs.bytesPerCluster
-		written, err := fs.file.WriteAt(b[bStart:bStart+fs.bytesPerCluster], clusterStart)
+		written, err := writableFile.WriteAt(b[bStart:bStart+fs.bytesPerCluster], clusterStart)
 		if err != nil {
 			return fmt.Errorf("error writing directory entries: %w", err)
 		}

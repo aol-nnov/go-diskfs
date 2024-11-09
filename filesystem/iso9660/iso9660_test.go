@@ -545,7 +545,7 @@ func TestIso9660Finalize(t *testing.T) {
 
 		// Create the disk image
 		// TODO: Explain why we need to use Raw here
-		mydisk, err := diskfs.Create(outputFileName, 100*1024, diskfs.Raw, LogicalBlocksize)
+		mydisk, err := diskfs.Create(outputFileName, 100*1024, LogicalBlocksize)
 		if err != nil {
 			return err
 		}

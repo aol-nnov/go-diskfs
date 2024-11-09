@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/diskfs/go-diskfs/backend/raw"
 	"github.com/diskfs/go-diskfs/filesystem"
 	"github.com/diskfs/go-diskfs/testhelper"
 )
@@ -273,7 +274,7 @@ func TestReadBlock(t *testing.T) {
 	}
 	for i, tt := range tests {
 		fs := &FileSystem{
-			file:       file,
+			file:       raw.New(file, true),
 			compressor: tt.compressor,
 		}
 		b, err := fs.readBlock(tt.location, tt.compressed, size)
@@ -330,7 +331,7 @@ func TestReadFragment(t *testing.T) {
 	for i, tt := range tests {
 		fs := &FileSystem{
 			fragments:  fragments,
-			file:       file,
+			file:       raw.New(file, true),
 			compressor: tt.compressor,
 		}
 		b, err := fs.readFragment(tt.index, tt.offset, tt.size)

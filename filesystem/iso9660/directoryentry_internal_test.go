@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/diskfs/go-diskfs/backend/raw"
 	"github.com/diskfs/go-diskfs/testhelper"
 	"github.com/go-test/deep"
 )
@@ -757,7 +758,7 @@ func TestDirectoryEntryParseDirEntries(t *testing.T) {
 			return 0, fmt.Errorf("unknown area to read %d", offset)
 		},
 	}
-	fs.file = f
+	fs.file = raw.New(f, true)
 	tests := []struct {
 		de  []*directoryEntry
 		b   []byte
@@ -855,7 +856,7 @@ func TestDirectoryEntryGetLocation(t *testing.T) {
 		hasMoreEntries:           false,
 		volumeSequence:           1,
 		filename:                 fmt.Sprintf("%x", 0x00),
-		filesystem:               &FileSystem{blocksize: 2048, file: f},
+		filesystem:               &FileSystem{blocksize: 2048, file: raw.New(f, true)},
 	}
 
 	for _, tt := range tests {
